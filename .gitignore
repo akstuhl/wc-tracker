@@ -1,0 +1,6 @@
+.DS_Store
+npm-debug.log
+node_modules
+package-lock.json
+a-tmp.md
+b-tmp.md

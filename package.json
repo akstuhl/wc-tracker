@@ -16,5 +16,9 @@
     "eslint-plugin-import": "^2.23.3",
     "eslint-plugin-node": "^11.1.0",
     "eslint-plugin-promise": "^5.1.0"
+  },
+  "dependencies": {
+    "md5": "^2.3.0",
+    "moment": "^2.29.1"
   }
 }

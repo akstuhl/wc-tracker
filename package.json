@@ -18,6 +18,7 @@
     "eslint-plugin-promise": "^5.1.0"
   },
   "dependencies": {
+    "glob": "^7.1.7",
     "md5": "^2.3.0",
     "moment": "^2.29.1"
   }

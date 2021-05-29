@@ -29,6 +29,7 @@ function usage () {
 }
 
 const args = process.argv
+
 if (args.length <= 2) {
   tracker((error, added, removed, fileCount) => {
     if (error) console.error(error)
@@ -38,9 +39,9 @@ if (args.length <= 2) {
 } else if (args[2] === 'usage') usage()
 else if (args[2] === 'set' && args.length === 5) setConfig(args[3], args[4], logger)
 else {
-  track(args[2], {}, (error, added, removed, newlyTrackedPath) => {
+  track(args.slice(2), {}, (error, added, removed, fileCount, newlyTrackedPaths) => {
     if (error) console.error(error)
-    if (newlyTrackedPath) console.log(`Began tracking ${newlyTrackedPath}`)
-    else console.log(`${added} words added, ${removed} words removed (net change ${added - removed} words)`)
+    if (newlyTrackedPaths && newlyTrackedPaths.length > 0) console.log(`Began tracking ${newlyTrackedPaths.length} file${newlyTrackedPaths.length > 1 ? 's' : ''}:\n${newlyTrackedPaths.join('\n')}`)
+    if (fileCount) console.log(`${added} words added, ${removed} words removed across ${fileCount} already tracked files (net change ${added - removed} words)`)
   })
 }

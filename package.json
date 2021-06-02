@@ -4,6 +4,10 @@
   "description": "",
   "type": "module",
   "main": "wc-tracker.js",
+  "bin": {
+    "@akstuhl/wc-tracker": "bin/cli.js",
+    "wc-tracker": "bin/cli.js"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },

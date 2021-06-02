@@ -2,7 +2,7 @@
 
 import yargs from 'yargs'
 import { hideBin } from 'yargs/helpers'
-import { update, track } from './wc-tracker.js'
+import { update, track } from '../wc-tracker.js'
 
 // function logger (error, result) {
 //   if (error) console.log(error)
@@ -32,6 +32,9 @@ import { update, track } from './wc-tracker.js'
 
 const argv = yargs(hideBin(process.argv))
   .scriptName('wc-tracker')
+  .usage(`
+wc-tracker <path>    start tracking file(s); report progress if already tracked
+wc-tracker           report total words added and removed across tracked files`)
   .option('verbose', {
     alias: 'v',
     type: 'boolean',

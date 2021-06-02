@@ -1,29 +1,58 @@
 'use babel'
 
 import { exec } from 'child_process'
-import { mkdir, readFile, writeFile, copyFile, stat, constants } from 'fs'
+import { mkdir, readFile, writeFile, copyFile, stat, constants, rm } from 'fs'
 import { resolve } from 'path'
 import { homedir } from 'os'
-import moment from 'moment'
 import md5 from 'md5'
+import { parse, lightFormat, addDays, subHours, subMinutes } from 'date-fns'
 
 const debug = true
 
 const storageDir = '.wc-tracker'
+const storageFormat = 'txt'
+const storageDateFormat = 'yyyyMMdd'
+
+const allowedOptions = {
+  // interval: positive int indicating number of days
+  interval: {
+    default: 1,
+    validator: value => {
+      if (Number.isInteger(value) && value > 0) return value
+      return null
+    }
+  },
+  // clock-start: string indicating time in 23-hour HH:MM format (when in the day the interval resets)
+  'clock-start': {
+    default: { hours: 4, minutes: 0 },
+    validator: value => {
+      const validated = {}
+      if (typeof value === 'string') {
+        const matches = value.match(/^(\d\d?)(?::(\d\d))?$/)
+        if (matches.length > 1 && matches[1]) {
+          validated.hours = parseInt(matches[1])
+          validated.minutes = (matches.length > 2 && matches[2]) ? parseInt(matches[2]) : 0
+          return validated
+        }
+      }
+      return null
+    }
+  }
+}
 
 const wordRegex = /[\u0027\u02BC\u0030-\u0039\u0041-\u005A\u0061-\u007A\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF\u0100-\u017F\u0180-\u024F\u1E02-\u1EF3]+|[\u4E00-\u9FFF\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\uac00-\ud7af\u0400-\u04FF]+|[\u0531-\u0556\u0561-\u0586\u0559\u055A\u055B]+|[\u0374-\u03FF]+|\w+/g // (from wordcount Atom package)
 
 // Compute the aggregate counts across all files that the index is tracking.
 // handler = function (error, wordsAdded, wordsRemoved, fileCount)
-export function tracker (handler) {
-  getIndex((err, index) => {
+export function update (options, handler) {
+  loadIndex(options, (err, index) => {
     if (err) throw err
 
-    trackFromIndex(index, false, null, handler)
+    trackFromIndex(index, null, handler)
   })
 }
 
-// Try to add each file in <paths> to today's cache and to the index, then run the tracker, reporting the aggregate counts across the specified files and which of the files are now newly tracked.
+// Try to add each file in <paths> to today's cache and to the index, then run `update`, reporting the aggregate counts across the specified files and which of the files are now newly tracked.
 // handler = function (error, added, removed, fileCount, newlyTrackedPaths)
 // Reporting could look like:
 //   Began tracking the following 2 files:
@@ -32,65 +61,28 @@ export function tracker (handler) {
 //   206 words added and 82 words removed across 6 previously tracked files
 export function track (paths, options, handler) {
   if (!paths || paths.length < 1) {
-    handler('No files matched that path or pattern.')
+    handler(new Error('No files matched the specified paths.'))
     return
   }
 
-  getIndex((err, index) => {
+  loadIndex(options, (err, index) => {
     if (err) throw err
 
-    // TODO split this out into another func, since multiple CLI commands will allow option setting
-    // for (const key in options) {
-    //   if (['clock-start', 'interval', 'scope'].indexOf(key) < 0) handler(`ERROR: unsupported option "${key}"`)
-    //   else index[key] = options[key]
-    // }
-
-    const todayStorage = getCurrentStorageDir()
-    mkdir(todayStorage, { recursive: true }, err => {
+    createCacheFiles(paths, index, (err, index, fileHashesToCount, newlyTrackedPaths) => {
       if (err) throw err
 
-      const fileHashesToCount = []
-      const newlyTrackedPaths = []
-      let fileCount = 0
-      let indexNeedsUpdate = false
+      trackFromIndex(index, fileHashesToCount, (err, added, removed, preexFileCount) => {
+        if (err) throw err
 
-      paths.forEach(path => {
-        path = resolve(process.cwd(), path)
-        const pathHash = md5(path)
-        const cachePath = `${getCurrentStorageDir()}/${pathHash}.txt` // todo use resolve or join
-
-        if (!index.files) index.files = {}
-        const indexEntry = index.files[pathHash] || { path }
-
-        copyFile(path, cachePath, constants.COPYFILE_EXCL, err => {
-          if (err) {
-            if (err.code !== 'EEXIST') throw err
-            // if the cached file already exists, add it to the list that trackFromIndex will consult
-            fileHashesToCount.push(pathHash)
-          } else { // if written successfully, create the index.files entry
-            indexEntry.added = 0
-            indexEntry.removed = 0
-            indexEntry.updated = Date.now()
-            newlyTrackedPaths.push(path)
-            index.files[pathHash] = indexEntry
-            indexNeedsUpdate = true
-          }
-          fileCount++
-          if (fileCount === paths.length) {
-            trackFromIndex(index, indexNeedsUpdate, fileHashesToCount, (err, added, removed, preexFileCount) => {
-              if (err) throw err
-
-              handler(null, added, removed, preexFileCount, newlyTrackedPaths)
-            })
-          }
-        })
+        handler(null, added, removed, preexFileCount, newlyTrackedPaths)
       })
     })
+  // })
   })
 }
 
 // handler = function (error, wordsAdded, wordsRemoved, fileCount)
-function trackFromIndex (index, indexNeedsUpdate, fileHashesToCount, handler) {
+function trackFromIndex (index, fileHashesToCount, handler) {
   let added = 0
   let removed = 0
   let fileCount = 0
@@ -100,7 +92,8 @@ function trackFromIndex (index, indexNeedsUpdate, fileHashesToCount, handler) {
     const fileCountTotal = fileHashesToCount.length
 
     const updateIndex = function () {
-      if (indexNeedsUpdate) {
+      if (index.needsUpdate) {
+        delete index.needsUpdate
         writeFile(getIndexPath(), JSON.stringify(index), { encoding: 'utf-8' }, err => {
           if (err) throw err
           handler(null, added, removed, fileCount)
@@ -126,12 +119,12 @@ function trackFromIndex (index, indexNeedsUpdate, fileHashesToCount, handler) {
       stat(file.path, {}, (err, stats) => {
         if (err) throw err
         if (!file.updated || file.updated < stats.mtimeMs) {
-          countWordDiff(resolve(getCurrentStorageDir(), `${hash}.txt`), file.path, (e, a, r) => {
+          countWordDiff(resolve(getCurrentStorageDir(index), `${hash}.${storageFormat}`), file.path, (e, a, r) => {
             if (e) throw e
             added += file.added = a
             removed += file.removed = r
             file.updated = Date.now()
-            indexNeedsUpdate = true
+            index.needsUpdate = true
             index.files[hash] = file
             processedFile()
           })
@@ -143,6 +136,42 @@ function trackFromIndex (index, indexNeedsUpdate, fileHashesToCount, handler) {
       })
     }
   }
+}
+
+function createCacheFiles (paths, index, handler) {
+  let fileCount = 0
+  const alreadyExistingFileHashes = []
+  const newlyCachedPaths = []
+
+  paths.forEach(path => {
+    path = resolve(process.cwd(), path)
+    const pathHash = md5(path)
+    const cachePath = `${getCurrentStorageDir(index)}/${pathHash}.${storageFormat}` // todo use resolve or join
+
+    if (!index.files) index.files = {}
+    const indexEntry = index.files[pathHash] || { path }
+
+    copyFile(path, cachePath, constants.COPYFILE_EXCL, err => {
+      if (err) {
+        if (err.code === 'ENOTSUP') console.error(`ERROR: path "${path}" is not a file that can be copied`)
+        else if (err.code !== 'EEXIST') throw err
+        // if the cached file already exists, add it to the list that trackFromIndex will consult
+        else alreadyExistingFileHashes.push(pathHash)
+      } else { // if written successfully, create the index.files entry
+        // indexEntry.path = path // todo - think we need this
+        indexEntry.added = 0
+        indexEntry.removed = 0
+        indexEntry.updated = Date.now()
+        newlyCachedPaths.push(path)
+        index.files[pathHash] = indexEntry
+        index.needsUpdate = true
+      }
+      fileCount++
+      if (fileCount === paths.length) {
+        handler(null, index, alreadyExistingFileHashes, newlyCachedPaths)
+      }
+    })
+  })
 }
 
 // handler = function (error, wordsAdded, wordsRemoved)
@@ -168,35 +197,98 @@ function countWordDiff (source, cached, handler) {
   })
 }
 
-export function setConfig (property, value, handler) {
-  if (['clock-start', 'interval', 'scope'].indexOf(property) < 0) handler({}, 'ERROR: unsupported config property')
-  else {
-    getIndex((err, index) => {
-      if (err) throw err
-      index[property] = value
-      writeFile(getIndexPath(), JSON.stringify(index), { encoding: 'utf-8' }, err => {
-        if (err) throw err
-        handler(null, JSON.stringify(index))
-      })
-    })
-  }
-}
+function loadIndex (options, handler) {
+  let index = {}
+  let noIndex = false
 
-export function getIndex (handler) {
   readFile(getIndexPath(), { encoding: 'utf-8' }, (err, contents) => {
-    if (err) {
-      if (err.code === 'ENOENT') handler(null, {}) // expect an error when the file doesn't exist yet
-      else throw err
+    if (err && err.code !== 'ENOENT') throw err // expect an error when the file doesn't exist yet
+    else if (contents) index = JSON.parse(contents)
+    else noIndex = true
+
+    index = processOptions(index, options)
+
+    const clockStart = index['clock-start']
+    const { interval, currentIntervalStartDate } = index
+    const todayDate = lightFormat(subHours(subMinutes(new Date(), clockStart.minutes), clockStart.hours), storageDateFormat)
+
+    if (!currentIntervalStartDate) {
+      index.currentIntervalStartDate = todayDate
+      index.needsUpdate = true
+    }
+
+    // if more than <interval> days have passed since the start of the current window, delete the tmp directory and freshly cache all indexed files
+    const refDate = new Date()
+    const intervalHasElapsed = addDays(parse(currentIntervalStartDate, storageDateFormat, refDate), interval) <= parse(todayDate, storageDateFormat, refDate)
+
+    if (noIndex || intervalHasElapsed) {
+      rm(`${homedir}/${storageDir}/tmp`, { recursive: true }, err => {
+        if (err && err.code !== 'ENOENT') throw err
+
+        index.currentIntervalStartDate = todayDate
+        index.needsUpdate = true
+
+        makeFreshCacheDir(index, (err, i) => {
+          if (err) throw err
+
+          handler(null, i)
+        })
+      })
     } else {
-      handler(null, JSON.parse(contents))
+      handler(null, index)
     }
   })
 }
 
-function getIndexPath () {
-  return `${homedir}/${storageDir}/index.json`
+function makeFreshCacheDir (index, handler) {
+  const currentStorageDirPath = getCurrentStorageDir(index)
+  mkdir(currentStorageDirPath, { recursive: true }, err => {
+    if (err) throw err
+
+    if (index.files && Object.keys(index.files).length > 0) {
+      const filePaths = Object.keys(index.files).map(key => index.files[key].path)
+      createCacheFiles(filePaths, index, (e, i, hashes) => {
+        if (e) throw e
+
+        index = i
+        for (const hash of hashes) { // we expect this to be all the keys in index.files
+          const indexEntry = index.files[hash]
+          indexEntry.added = 0
+          indexEntry.removed = 0
+          indexEntry.updated = Date.now()
+        }
+        handler(null, index)
+      })
+    } else handler(null, index)
+  })
 }
 
-function getCurrentStorageDir () {
-  return `${homedir}/${storageDir}/tmp/${moment().format('YYYYMMDD')}`
+function getIndexPath () {
+  return `${homedir}/${storageDir}/index.json` // todo use join or resolve
+}
+
+function processOptions (index, options) {
+  for (const key in options) {
+    if (Object.keys(allowedOptions).indexOf(key) < 0) console.error(`ERROR: unsupported option "${key}"`)
+    else {
+      const validated = allowedOptions[key].validator(options[key])
+      if (!validated) console.error(`ERROR: value "${options[key]}" for option ${key} is incorrectly formatted`)
+      else {
+        index[key] = validated
+        index.needsUpdate = true
+      }
+    }
+  }
+  for (const key in allowedOptions) {
+    if (!index[key]) {
+      index[key] = allowedOptions[key].default
+      index.needsUpdate = true
+    }
+  }
+  return index
+}
+
+function getCurrentStorageDir (index) {
+  if (!index || !index.currentIntervalStartDate) throw new Error('expected an index object with property currentIntervalStartDate')
+  return `${homedir}/${storageDir}/tmp/${index.currentIntervalStartDate}` // todo use join or resolve
 }

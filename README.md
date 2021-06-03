@@ -35,12 +35,16 @@ Examples:
 ## API
 
 ```
+import { update, track, clear } from 'wc-tracker'
+```
+
+```
 update(options, runtimeOptions, callback)
 ```
 
 Report the aggregate counts across all files that the index is tracking.
 
-- options -- {` interval: <int>, "clock-start": <string, e.g. "04:00"> }`
+- options -- `{ interval: <int>, "clock-start": <string, e.g. "04:00"> }`
 - runtimeOptions -- `{ verbose: <int> }`
 - callback -- `function (error, wordsAdded, wordsRemoved, fileCount)`
 
@@ -50,11 +54,12 @@ Report the aggregate counts across all files that the index is tracking.
 track (paths, options, runtimeOptions, callback)
 ```
 
-Try to add each file in <paths> to the index, then report the aggregate counts across the specified files and which of the files are now newly tracked.
+Try to add each file in `paths` to the index, then report the aggregate counts across the specified files that were already tracked; also report the paths of files that are now newly tracked.
 
+- paths -- `[<string>, ...]`
 - options -- `{ interval: <int>, "clock-start": <string, e.g. "04:00"> }`
 - runtimeOptions -- `{ verbose: <int> }`
-- callback -- `function (error, added, removed, fileCount, newlyTrackedPaths)`
+- callback -- `function (error, added, removed, alreadyTrackedFileCount, newlyTrackedPaths)`
 
 <br>
 

@@ -4,11 +4,23 @@
 
 `wc-tracker` keeps a running count of words added and deleted from any file you add to its index. Intended as a tool to track writing progress in a plain text drafting workflow, the script lets you set the tracking interval (i.e. for a daily or weekly goal) and the time of day when the interval resets.
 
+## Example
+
+```
+> wc-tracker README.md
+# Began tracking 1 file:
+# /Users/me/dev/wc-tracker/README.md
+> wc-tracker
+# 252 words added and 86 words removed across 8 tracked files (net change 166 words)
+```
+
 ## Installation
 
 ```
-npm i -g wc-tracker // -g option to install CLI
+npm i -g wc-tracker
 ```
+
+(Recommended to use the `-g` option when planning to use the command line interface)
 
 ## CLI
 

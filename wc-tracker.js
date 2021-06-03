@@ -220,8 +220,13 @@ function countWordDiff (source, cached, verbose, handler) {
       console.log('\n')
     }
     diffLines.forEach(line => {
-      if (line.match(/^\+/)) added += line.match(wordRegex).length
-      else if (line.match(/^-/)) removed += line.match(wordRegex).length
+      if (line.match(/^\+/)) {
+        const words = line.match(wordRegex)
+        if (words) added += words.length
+      } else if (line.match(/^-/)) {
+        const words = line.match(wordRegex)
+        if (words) removed += words.length
+      }
     })
 
     handler(null, added, removed)

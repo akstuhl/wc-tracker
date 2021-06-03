@@ -1,6 +1,6 @@
 {
   "name": "wc-tracker",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Track writing progress across plain text files using git diff, with customizable intervals and a CLI",
   "type": "module",
   "main": "wc-tracker.js",

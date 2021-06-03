@@ -89,6 +89,7 @@ export function track (paths, options, runtimeOptions, handler) {
   })
 }
 
+// Delete the entire tracking index and cache storage.
 // handler = function (error)
 export function clear (options, handler) {
   if (options.confirm) {
@@ -98,6 +99,7 @@ export function clear (options, handler) {
       if (handler) handler(null)
     })
   }
+  else (handler('You must pass {confirm: true} to the options argument to clear the tracking index.'))
 }
 
 // handler = function (error, wordsAdded, wordsRemoved, fileCount)

@@ -2,15 +2,15 @@
 
 import { exec } from 'child_process'
 import { mkdir, readFile, writeFile, copyFile, stat, constants, rm } from 'fs'
-import { resolve } from 'path'
+import { resolve, join } from 'path'
 import { homedir } from 'os'
 import md5 from 'md5'
 import { parse, lightFormat, addDays, subHours, subMinutes } from 'date-fns'
 
-const debug = true
-
 const storageDir = '.wc-tracker'
 const storageFormat = 'txt'
+const tmpDir = 'tmp'
+const indexName = 'index.json'
 const storageDateFormat = 'yyyyMMdd'
 
 const allowedOptions = {
@@ -20,6 +20,10 @@ const allowedOptions = {
     validator: value => {
       if (Number.isInteger(value) && value > 0) return value
       return null
+    },
+    print: value => {
+      if (value) return `${value} day${value > 1 ? 's' : ''}`
+      return '(not set)'
     }
   },
   // clock-start: string indicating time in 23-hour HH:MM format (when in the day the interval resets)
@@ -36,6 +40,10 @@ const allowedOptions = {
         }
       }
       return null
+    },
+    print: value => {
+      if (!value) return '(not set)'
+      return `${value.hours}:${String(value.minutes).padStart(2, '0')}`
     }
   }
 }
@@ -44,11 +52,11 @@ const wordRegex = /[\u0027\u02BC\u0030-\u0039\u0041-\u005A\u0061-\u007A\u00C0-\u
 
 // Compute the aggregate counts across all files that the index is tracking.
 // handler = function (error, wordsAdded, wordsRemoved, fileCount)
-export function update (options, handler) {
+export function update (options, runtimeOptions, handler) {
   loadIndex(options, (err, index) => {
     if (err) throw err
 
-    trackFromIndex(index, null, handler)
+    trackFromIndex(index, null, runtimeOptions.verbose, handler)
   })
 }
 
@@ -59,7 +67,7 @@ export function update (options, handler) {
 //   /Users/andy/blah.md
 //   /Users/andy/new.md
 //   206 words added and 82 words removed across 6 previously tracked files
-export function track (paths, options, handler) {
+export function track (paths, options, runtimeOptions, handler) {
   if (!paths || paths.length < 1) {
     handler(new Error('No files matched the specified paths.'))
     return
@@ -71,7 +79,7 @@ export function track (paths, options, handler) {
     createCacheFiles(paths, index, (err, index, fileHashesToCount, newlyTrackedPaths) => {
       if (err) throw err
 
-      trackFromIndex(index, fileHashesToCount, (err, added, removed, preexFileCount) => {
+      trackFromIndex(index, fileHashesToCount, runtimeOptions.verbose, (err, added, removed, preexFileCount) => {
         if (err) throw err
 
         handler(null, added, removed, preexFileCount, newlyTrackedPaths)
@@ -81,8 +89,19 @@ export function track (paths, options, handler) {
   })
 }
 
+// handler = function (error)
+export function clear (options, handler) {
+  if (options.confirm) {
+    rm(join(homedir(), storageDir), { recursive: true }, err => {
+      if (err && err.code !== 'ENOENT') throw err
+
+      if (handler) handler(null)
+    })
+  }
+}
+
 // handler = function (error, wordsAdded, wordsRemoved, fileCount)
-function trackFromIndex (index, fileHashesToCount, handler) {
+function trackFromIndex (index, fileHashesToCount, verbose, handler) {
   let added = 0
   let removed = 0
   let fileCount = 0
@@ -92,6 +111,9 @@ function trackFromIndex (index, fileHashesToCount, handler) {
     const fileCountTotal = fileHashesToCount.length
 
     const updateIndex = function () {
+      if (verbose) {
+        indexLogger(index)
+      }
       if (index.needsUpdate) {
         delete index.needsUpdate
         writeFile(getIndexPath(), JSON.stringify(index), { encoding: 'utf-8' }, err => {
@@ -115,11 +137,12 @@ function trackFromIndex (index, fileHashesToCount, handler) {
       const file = index.files[hash]
       if (!file) handler(`Error: hash ${hash} not in index.`)
 
-      // check if file has been touched more recently than its 'updated' value, run diff and update index if so
+      // check if file has been modified more recently than its 'updated' value, run diff and update index if so
       stat(file.path, {}, (err, stats) => {
+        // TODO - if the file has been deleted/renamed, gracefully ignore it
         if (err) throw err
         if (!file.updated || file.updated < stats.mtimeMs) {
-          countWordDiff(resolve(getCurrentStorageDir(index), `${hash}.${storageFormat}`), file.path, (e, a, r) => {
+          countWordDiff(resolve(getCurrentStorageDir(index), `${hash}.${storageFormat}`), file.path, verbose, (e, a, r) => {
             if (e) throw e
             added += file.added = a
             removed += file.removed = r
@@ -135,9 +158,12 @@ function trackFromIndex (index, fileHashesToCount, handler) {
         }
       })
     }
+  } else {
+    handler(null, 0, 0, 0)
   }
 }
 
+// handler = function (error, index, alreadyExistingFileHashes, newlyCachedPaths)
 function createCacheFiles (paths, index, handler) {
   let fileCount = 0
   const alreadyExistingFileHashes = []
@@ -146,7 +172,7 @@ function createCacheFiles (paths, index, handler) {
   paths.forEach(path => {
     path = resolve(process.cwd(), path)
     const pathHash = md5(path)
-    const cachePath = `${getCurrentStorageDir(index)}/${pathHash}.${storageFormat}` // todo use resolve or join
+    const cachePath = join(getCurrentStorageDir(index), `${pathHash}.${storageFormat}`)
 
     if (!index.files) index.files = {}
     const indexEntry = index.files[pathHash] || { path }
@@ -158,7 +184,6 @@ function createCacheFiles (paths, index, handler) {
         // if the cached file already exists, add it to the list that trackFromIndex will consult
         else alreadyExistingFileHashes.push(pathHash)
       } else { // if written successfully, create the index.files entry
-        // indexEntry.path = path // todo - think we need this
         indexEntry.added = 0
         indexEntry.removed = 0
         indexEntry.updated = Date.now()
@@ -175,7 +200,7 @@ function createCacheFiles (paths, index, handler) {
 }
 
 // handler = function (error, wordsAdded, wordsRemoved)
-function countWordDiff (source, cached, handler) {
+function countWordDiff (source, cached, verbose, handler) {
   exec(`git --no-pager diff --no-index --word-diff=porcelain "${source}" "${cached}"`, { cwd: process.cwd() }, (error, stdout, stderr) => {
     if (error) {
       if (error.code !== 1) { // git diff returns code 1 when there are differences, making `exec` think it failed
@@ -187,7 +212,11 @@ function countWordDiff (source, cached, handler) {
     let removed = 0
 
     const diffLines = stdout.split('\n').slice(5)
-    if (debug) console.log(diffLines)
+    if (verbose > 1) {
+      console.log(source)
+      console.log(diffLines)
+      console.log('\n')
+    }
     diffLines.forEach(line => {
       if (line.match(/^\+/)) added += line.match(wordRegex).length
       else if (line.match(/^-/)) removed += line.match(wordRegex).length
@@ -197,6 +226,7 @@ function countWordDiff (source, cached, handler) {
   })
 }
 
+// handler = function (error, index)
 function loadIndex (options, handler) {
   let index = {}
   let noIndex = false
@@ -222,7 +252,7 @@ function loadIndex (options, handler) {
     const intervalHasElapsed = addDays(parse(currentIntervalStartDate, storageDateFormat, refDate), interval) <= parse(todayDate, storageDateFormat, refDate)
 
     if (noIndex || intervalHasElapsed) {
-      rm(`${homedir}/${storageDir}/tmp`, { recursive: true }, err => {
+      rm(join(homedir(), storageDir, tmpDir), { recursive: true }, err => {
         if (err && err.code !== 'ENOENT') throw err
 
         index.currentIntervalStartDate = todayDate
@@ -240,6 +270,7 @@ function loadIndex (options, handler) {
   })
 }
 
+// handler = function (error, index)
 function makeFreshCacheDir (index, handler) {
   const currentStorageDirPath = getCurrentStorageDir(index)
   mkdir(currentStorageDirPath, { recursive: true }, err => {
@@ -264,7 +295,7 @@ function makeFreshCacheDir (index, handler) {
 }
 
 function getIndexPath () {
-  return `${homedir}/${storageDir}/index.json` // todo use join or resolve
+  return join(homedir(), storageDir, indexName)
 }
 
 function processOptions (index, options) {
@@ -290,5 +321,26 @@ function processOptions (index, options) {
 
 function getCurrentStorageDir (index) {
   if (!index || !index.currentIntervalStartDate) throw new Error('expected an index object with property currentIntervalStartDate')
-  return `${homedir}/${storageDir}/tmp/${index.currentIntervalStartDate}` // todo use join or resolve
+  return join(homedir(), storageDir, tmpDir, index.currentIntervalStartDate) // todo use join or resolve
+}
+
+function indexLogger (index) {
+  if (index) {
+    for (const option in allowedOptions) {
+      console.log(`${option}: ${allowedOptions[option].print(index[option])}`)
+    }
+    if (index.files) {
+      const hashes = Object.keys(index.files)
+      if (hashes.length > 0) {
+        console.log(`Currently tracking ${hashes.length} files:`)
+        for (const hash in index.files) {
+          const file = index.files[hash]
+          console.log(file.path)
+          for (const prop in file) {
+            if (prop !== 'path') console.log(`  ${prop}: ${file[prop]}`)
+          }
+        }
+      }
+    }
+  }
 }
